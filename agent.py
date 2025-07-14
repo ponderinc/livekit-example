@@ -26,7 +26,7 @@ class Assistant(Agent):
 
 async def entrypoint(ctx: agents.JobContext):
 
-    voice_id = "68669d8c70694146ffa6cdc3"
+    voice_id = "686982d630110009f4a69cac"
     
     session = AgentSession(
         stt=openai.STT(model="gpt-4o-mini-transcribe"),
