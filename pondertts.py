@@ -34,8 +34,11 @@ BASE_URL = "inf.useponder.ai" # <- or your self-hosted Ponder instance
 NUM_CHANNELS = 1
 
 
-def _to_ponder_url(api_key: str, voice_id: str) -> str:
-    return f"wss://{BASE_URL}/v1/ws/tts?api_key={api_key}&voice_id={voice_id}"
+def _to_ponder_url(api_key: str, voice_id: str, websocket: bool = True) -> str:
+    if websocket:
+        return f"wss://{BASE_URL}/v1/ws/tts?api_key={api_key}&voice_id={voice_id}"
+    else:
+        return f"https://{BASE_URL}/v1/tts"
 
 
 
@@ -72,7 +75,7 @@ class PonderTTS(tts.TTS):
         """
         
         super().__init__(
-            capabilities=tts.TTSCapabilities(streaming=True),
+            capabilities=tts.TTSCapabilities(streaming=False),
             sample_rate=24000,
             num_channels=NUM_CHANNELS,
         )
@@ -141,8 +144,8 @@ class PonderTTS(tts.TTS):
 
     def synthesize(
         self, text: str, *, conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS
-    ):
-        raise NotImplementedError("Ponder TTS only supports streaming generation")
+    ) -> ChunkedStream:
+        return ChunkedStream(tts=self, input_text=text, conn_options=conn_options)
 
 
 
@@ -163,6 +166,51 @@ class PonderTTS(tts.TTS):
         self._streams.clear()
 
         await self._pool.aclose()
+
+
+
+class ChunkedStream(tts.ChunkedStream):
+    def __init__(self, *, tts: TTS, input_text: str, conn_options: APIConnectOptions) -> None:
+        super().__init__(tts=tts, input_text=input_text, conn_options=conn_options)
+        self._tts: TTS = tts
+        self._opts = replace(tts._opts)
+
+    async def _run(self, output_emitter: tts.AudioEmitter) -> None:
+        try:
+            async with self._tts._ensure_session().post(
+                _to_ponder_url(
+                    self._opts.api_key,
+                    self._opts.voice_id,
+                    websocket=False,
+                ),
+                headers={
+                    "Authorization": f"Bearer {self._opts.api_key}",
+                },
+                json={"text": self._input_text, "voice_id": self._opts.voice_id},
+                timeout=aiohttp.ClientTimeout(total=30, sock_connect=self._conn_options.timeout),
+            ) as resp:
+                resp.raise_for_status()
+
+                output_emitter.initialize(
+                    request_id=utils.shortuuid(),
+                    sample_rate=self._opts.sample_rate,
+                    num_channels=NUM_CHANNELS,
+                    mime_type="audio/pcm",
+                )
+
+                async for data, _ in resp.content.iter_chunks():
+                    output_emitter.push(data)
+
+                output_emitter.flush()
+
+        except asyncio.TimeoutError:
+            raise APITimeoutError() from None
+        except aiohttp.ClientResponseError as e:
+            raise APIStatusError(
+                message=e.message, status_code=e.status, request_id=None, body=None
+            ) from None
+        except Exception as e:
+            raise APIConnectionError() from e
 
 
 class SynthesizeStream(tts.SynthesizeStream):
