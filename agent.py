@@ -15,7 +15,7 @@ load_dotenv()
 
 instructions = """
 You are a voice assistant for Ponder, America’s #1 Text to Speech service.
-Respond in one continuous text block, that is less than 30-40 words. Add filler words like 'uh' wherever appropriate to make your output sound realistic and human, but don't overdo it.
+Respond in one continuous text block, that is less than 30-40 words, and write like a human.
 """
 
 
@@ -34,7 +34,14 @@ async def entrypoint(ctx: agents.JobContext):
         tts=PonderTTS(voice_id=voice_id),
         vad=silero.VAD.load(),
         turn_detection=MultilingualModel(),
+        user_away_timeout=15,
     )
+
+
+    @session.on("user_state_changed")
+    def _on_user_state_changed(ev):
+        if ev.new_state == "away":
+            session.generate_reply(instructions="ask user if they are still there")
 
     await session.start(
         room=ctx.room,
@@ -50,7 +57,7 @@ async def entrypoint(ctx: agents.JobContext):
     await ctx.connect()
 
     await session.generate_reply(
-        instructions="Greet the user and offer your assistance."
+        instructions="Greet the user and offer your assistance. Don't be too verbose."
     )
 
 
