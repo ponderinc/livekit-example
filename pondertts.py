@@ -48,6 +48,7 @@ class _TTSOptions:
     encoding: str
     sample_rate: int
     voice_id: str
+    use_websocket: bool
     word_tokenizer: tokenize.WordTokenizer
     api_key: str
     mip_opt_out: bool = False
@@ -59,6 +60,7 @@ class PonderTTS(tts.TTS):
         *,
         api_key: str | None = None,
         voice_id: str | None = None,
+        use_websocket: bool = False,
         word_tokenizer: NotGivenOr[tokenize.WordTokenizer] = NOT_GIVEN,
         http_session: aiohttp.ClientSession | None = None,
         mip_opt_out: bool = False,
@@ -75,7 +77,7 @@ class PonderTTS(tts.TTS):
         """
         
         super().__init__(
-            capabilities=tts.TTSCapabilities(streaming=False),
+            capabilities=tts.TTSCapabilities(streaming=use_websocket),
             sample_rate=24000,
             num_channels=NUM_CHANNELS,
         )
@@ -96,6 +98,7 @@ class PonderTTS(tts.TTS):
             encoding="linear16",
             sample_rate=24000,
             voice_id=voice_id,
+            use_websocket=use_websocket,
             word_tokenizer=word_tokenizer,
             api_key=api_key,
             mip_opt_out=mip_opt_out,
@@ -103,19 +106,20 @@ class PonderTTS(tts.TTS):
         self._session = http_session
         self._streams = weakref.WeakSet[SynthesizeStream]()
 
-        self._pool = utils.ConnectionPool[aiohttp.ClientWebSocketResponse](
-            connect_cb=self._connect_ws,
-            close_cb=self._close_ws,
-            max_session_duration=3600,  # 1 hour
-            mark_refreshed_on_get=False,
-        )
+        if use_websocket:
+            self._pool = utils.ConnectionPool[aiohttp.ClientWebSocketResponse](
+                connect_cb=self._connect_ws,
+                close_cb=self._close_ws,
+                max_session_duration=3600,  # 1 hour
+                mark_refreshed_on_get=False,
+            )
 
     async def _connect_ws(self, timeout: float) -> aiohttp.ClientWebSocketResponse:
         session = self._ensure_session()
 
         return await asyncio.wait_for(
             session.ws_connect(
-                _to_ponder_url(self._opts.api_key, self._opts.voice_id),
+                _to_ponder_url(self._opts.api_key, self._opts.voice_id, websocket=True),
 
             ),
             timeout,
@@ -157,7 +161,10 @@ class PonderTTS(tts.TTS):
         return stream
 
     def prewarm(self) -> None:
-        self._pool.prewarm()
+        if self._opts.use_websocket:
+            self._pool.prewarm()
+        else:
+            pass
 
     async def aclose(self) -> None:
         for stream in list(self._streams):
@@ -279,7 +286,6 @@ class SynthesizeStream(tts.SynthesizeStream):
                 self._mark_started()
                 await ws.send_str(json.dumps(speak_msg))
 
-            # Always flush after a segment
             flush_msg = {"type": "flush"}
             await ws.send_str(json.dumps(flush_msg))
 
@@ -297,6 +303,9 @@ class SynthesizeStream(tts.SynthesizeStream):
                     output_emitter.push(msg.data)
                 elif msg.type == aiohttp.WSMsgType.TEXT:
                     resp = json.loads(msg.data)
+                    if resp.get("type") == "flushed":
+                        output_emitter.end_segment()
+                        break
                     logger.info(f"Ponder websocket text response: {resp}")
 
         async with self._tts._pool.connection(timeout=self._conn_options.timeout) as ws:
