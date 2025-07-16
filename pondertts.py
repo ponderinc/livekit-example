@@ -286,9 +286,8 @@ class SynthesizeStream(tts.SynthesizeStream):
                 self._mark_started()
                 await ws.send_str(json.dumps(speak_msg))
 
-            # TODO: Add flush
-            # flush_msg = {"type": "flush"}
-            # await ws.send_str(json.dumps(flush_msg))
+            flush_msg = {"type": "flush"}
+            await ws.send_str(json.dumps(flush_msg))
 
         async def recv_task(ws: aiohttp.ClientWebSocketResponse) -> None:
             while True:
@@ -304,6 +303,9 @@ class SynthesizeStream(tts.SynthesizeStream):
                     output_emitter.push(msg.data)
                 elif msg.type == aiohttp.WSMsgType.TEXT:
                     resp = json.loads(msg.data)
+                    if resp.get("type") == "flushed":
+                        output_emitter.end_segment()
+                        break
                     logger.info(f"Ponder websocket text response: {resp}")
 
         async with self._tts._pool.connection(timeout=self._conn_options.timeout) as ws:

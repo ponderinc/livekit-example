@@ -41,7 +41,7 @@ async def entrypoint(ctx: agents.JobContext):
     @session.on("user_state_changed")
     def _on_user_state_changed(ev):
         if ev.new_state == "away":
-            session.generate_reply(instructions="ask user if they are still there")
+            session.generate_reply(instructions="the user hasn't said anything in a while, ask them if they are still there.")
 
     await session.start(
         room=ctx.room,
